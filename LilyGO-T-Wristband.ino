@@ -1,18 +1,16 @@
 
-#include <pcf8563.h>
-#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
-#include <SPI.h>
-#include <Wire.h>
+#include <pcf8563.h>      // Library for NXP PCF8563 RTC chip
+#include <TFT_eSPI.h>     // Graphics and font library for ST7735 driver chip
+#include <SPI.h>          // Serial Peripheral Interface (SPI) 
+#include <Wire.h>         // I2C library
 #include <WiFi.h>
+// #include <MPU9250.h>
 #include "sensor.h"
 #include "esp_adc_cal.h"
 #include "ttgo.h"
 #include "charge.h"
 
-//  git clone -b development https://github.com/tzapu/WiFiManager.git
-#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
-
-// #define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
+#define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
 #define ARDUINO_OTA_UPDATE      //! Enable this line OTA update
 
 
@@ -22,6 +20,8 @@
 #include <ArduinoOTA.h>
 #endif
 
+const char *ssid = "xxx";
+const char *password = "xxx";
 
 #define TP_PIN_PIN          33
 #define I2C_SDA_PIN         21
@@ -34,11 +34,11 @@
 #define LED_PIN             4
 #define CHARGE_PIN          32
 
+// chips
 extern MPU9250 IMU;
-
-TFT_eSPI tft = TFT_eSPI();  // Invoke library, pins defined in User_Setup.h
-PCF8563_Class rtc;
-WiFiManager wifiManager;
+//MPU9250         imu = IMU(Wire,0x68);
+TFT_eSPI        tft = TFT_eSPI(); 
+PCF8563_Class   rtc;
 
 char buff[256];
 bool rtcIrq = false;
@@ -58,81 +58,99 @@ bool charge_indication = false;
 
 uint8_t hh, mm, ss ;
 
-void configModeCallback (WiFiManager *myWiFiManager)
-{
-    Serial.println("Entered config mode");
-    Serial.println(WiFi.softAPIP());
-    //if you used auto generated SSID, print it
-    Serial.println(myWiFiManager->getConfigPortalSSID());
+// TFT output
+#define TFT_NB_OF_LINES 4
+int tftCurrentLine = 0;
+char tftBuffer[TFT_NB_OF_LINES+1][80]; // reserve one extra line for scrolling
 
+void tfdClr() {
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString("Connect hotspot name ",  20, tft.height() / 2 - 20);
-    tft.drawString("configure wrist",  35, tft.height() / 2  + 20);
-    tft.setTextColor(TFT_GREEN);
-    tft.drawString("\"T-Wristband\"",  40, tft.height() / 2 );
+    tft.setTextDatum(TL_DATUM);
+    tftCurrentLine=0;
+ }
 
+void tfdPrintLine(const char *buf, const int lineNb) {
+  tft.drawString(buf, 0, lineNb * 16);
 }
+
+void tfdPrint(const char *buf) {
+  if (tftCurrentLine >= TFT_NB_OF_LINES) {
+    // scroll & print
+    tfdClr();
+    for (int ix=0; ix < TFT_NB_OF_LINES; ix++) {
+      strncpy(tftBuffer[ix], tftBuffer[ix+1], sizeof(tftBuffer[ix]));
+      tfdPrintLine(tftBuffer[ix], ix);
+    } 
+  }
+  else {
+    // print
+    tfdPrintLine(tftBuffer[tftCurrentLine], tftCurrentLine);
+    tftCurrentLine +=1;
+  }
+  
+}
+
+char* tfdGetBuffer() {
+  return tftBuffer[tftCurrentLine];
+}
+
+#define DCLR() {tfdClr();}
+//#define DPRINT(...) { char b = tfdGetBuffer(); snprintf(b, sizeof(b), __VA_ARGS__); tfdPrint(b); }
+#define DPRINT(...) { char* b = tfdGetBuffer(); snprintf(tftBuffer[tftCurrentLine], sizeof(tftBuffer[tftCurrentLine]), __VA_ARGS__); tfdPrint(tftBuffer[tftCurrentLine]); }
+#define DWAIT() {delay(2000);}
 
 void scanI2Cdevice(void)
 {
-    uint8_t err, addr;
-    int nDevices = 0;
-    for (addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        err = Wire.endTransmission();
-        if (err == 0) {
-            Serial.print("I2C device found at address 0x");
-            if (addr < 16)
-                Serial.print("0");
-            Serial.print(addr, HEX);
-            Serial.println(" !");
-            nDevices++;
-        } else if (err == 4) {
-            Serial.print("Unknow error at address 0x");
-            if (addr < 16)
-                Serial.print("0");
-            Serial.println(addr, HEX);
-        }
-    }
-    if (nDevices == 0)
-        Serial.println("No I2C devices found\n");
-    else
-        Serial.println("Done\n");
+  DCLR();
+  uint8_t err, addr;
+  int nDevices = 0;
+  for (addr = 1; addr < 127; addr++) {
+      Wire.beginTransmission(addr);
+      err = Wire.endTransmission();
+      if (err == 0) {
+          Serial.print("I2C device found at address 0x");            
+          if (addr < 16)
+              Serial.print("0");
+          Serial.print(addr, HEX);
+          Serial.println(" !");
+          nDevices++;  
+          DPRINT("I2C device found at 0x%x", addr);
+      } else if (err == 4) {
+          Serial.print("Unknow error at address 0x");
+          if (addr < 16)
+              Serial.print("0");
+          Serial.println(addr, HEX);
+          DPRINT("Unknow error at 0x%x", addr);
+      }
+  }
+  if (nDevices == 0)
+      Serial.println("No I2C devices found\n");
+  else
+      Serial.println("Done\n");
+  DWAIT();
 }
 
 
 void wifi_scan()
 {
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextSize(1);
-
-    tft.drawString("Scan Network", tft.width() / 2, tft.height() / 2);
+    DCLR();
+    DPRINT("Scan Network:");
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     delay(100);
 
     int16_t n = WiFi.scanNetworks();
-    tft.fillScreen(TFT_BLACK);
     if (n == 0) {
-        tft.drawString("no networks found", tft.width() / 2, tft.height() / 2);
+        DPRINT("no networks found");
     } else {
-        tft.setTextDatum(TL_DATUM);
-        tft.setCursor(0, 0);
         for (int i = 0; i < n; ++i) {
-            sprintf(buff,
-                    "[%d]:%s(%d)",
-                    i + 1,
-                    WiFi.SSID(i).c_str(),
-                    WiFi.RSSI(i));
-            Serial.println(buff);
-            tft.println(buff);
+            DPRINT("[%d]:%s(%d)", i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i));
         }
     }
     WiFi.mode(WIFI_OFF);
+    DWAIT();
 }
 
 
@@ -148,14 +166,9 @@ void drawProgressBar(uint16_t x0, uint16_t y0, uint16_t w, uint16_t h, uint8_t p
     tft.fillRect(x0 + margin, y0 + margin, barWidth * percentage / 100.0, barHeight, barColor);
 }
 
-
-void factoryTest()
-{
-    scanI2Cdevice();
-    delay(2000);
-
-    tft.fillScreen(TFT_BLACK);
-    tft.drawString("RTC Interrupt self test", 0, 0);
+void rtcSelfTest() {
+    DCLR();
+    DPRINT("RTC Interrupt self test");
 
     int yy = 2019, mm = 5, dd = 15, h = 2, m = 10, s = 0;
     rtc.begin(Wire);
@@ -163,16 +176,14 @@ void factoryTest()
     delay(500);
     RTC_Date dt = rtc.getDateTime();
     if (dt.year != yy || dt.month != mm || dt.day != dd || dt.hour != h || dt.minute != m) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.fillScreen(TFT_BLACK);
-        tft.drawString("Write DateTime FAIL", 0, 0);
+        DPRINT("Write DateTime FAIL");
     } else {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.fillScreen(TFT_BLACK);
-        tft.drawString("Write DateTime PASS", 0, 0);
+        DPRINT("Write DateTime PASS");
     }
 
-    delay(2000);
+     delay(2000);
 
     //! RTC Interrupt Test
     pinMode(RTC_INT_PIN, INPUT_PULLUP); //need change to rtc_pin
@@ -189,12 +200,7 @@ void factoryTest()
     rtc.enableAlarm();
 
     for (;;) {
-        snprintf(buff, sizeof(buff), "%s", rtc.formatDateTime());
-        Serial.print("\t");
-        Serial.println(buff);
-        tft.fillScreen(TFT_BLACK);
-        tft.drawString(buff, 0, 0);
-
+        DPRINT("%s", rtc.formatDateTime());
         if (rtcIrq) {
             rtcIrq = 0;
             detachInterrupt(RTC_INT_PIN);
@@ -203,29 +209,46 @@ void factoryTest()
         }
         delay(1000);
     }
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.drawString("RTC Interrupt PASS", 0, 0);
-    delay(2000);
+    DPRINT("RTC Interrupt PASS");
+    
+    DWAIT();
+}
 
+void factoryTest()
+{
+    scanI2Cdevice();
+    rtcSelfTest();
     wifi_scan();
-    delay(2000);
 }
 
 void setupWiFi()
 {
 #ifdef ARDUINO_OTA_UPDATE
-    WiFiManager wifiManager;
-    //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
-    wifiManager.setAPCallback(configModeCallback);
-    wifiManager.setBreakAfterConfig(true);          // Without this saveConfigCallback does not get fired
-    wifiManager.autoConnect("T-Wristband");
+    DCLR();
+    DPRINT("Wifi setup");
+    DPRINT("Connection to %s", ssid);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+        DPRINT("Connection Failed! Rebooting...");
+        delay(5000);
+        ESP.restart();
+    }
+
+    DPRINT("IP address: %s", WiFi.localIP().toString().c_str());
+
+    DWAIT();
+       
 #endif
 }
 
 void setupOTA()
 {
 #ifdef ARDUINO_OTA_UPDATE
+    DCLR();
+    DPRINT("OTA setup");
+    
     // Port defaults to 3232
     // ArduinoOTA.setPort(3232);
 
@@ -284,6 +307,9 @@ void setupOTA()
     });
 
     ArduinoOTA.begin();
+
+    DPRINT("..done");
+    DWAIT();
 #endif
 }
 
@@ -315,7 +341,7 @@ void setupRTC()
     ss = datetime.second;
 }
 
-void setup(void)
+void setup()
 {
     Serial.begin(115200);
 
@@ -397,7 +423,7 @@ void RTC_Show()
         if (omm != mm) { // Only redraw every minute to minimise flicker
             // Uncomment ONE of the next 2 lines, using the ghost image demonstrates text overlay as time is drawn over it
             tft.setTextColor(0x39C4, TFT_BLACK);  // Leave a 7 segment ghost image, comment out next line!
-            //tft.setTextColor(TFT_BLACK, TFT_BLACK); // Set font colour to black to wipe image
+            // tft.setTextColor(TFT_BLACK, TFT_BLACK); // Set font colour to black to wipe image
             // Font 7 is to show a pseudo 7 segment display.
             // Font 7 only contains characters [space] 0 1 2 3 4 5 6 7 8 9 0 : .
             tft.drawString("88:88", xpos, ypos, 7); // Overwrite the text to clear it
@@ -434,9 +460,89 @@ void IMU_Show()
     tft.drawString(buff, 0, 16);
     snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", (int)1000 * IMU.ay, IMU.gy, IMU.my);
     tft.drawString(buff, 0, 32);
-    snprintf(buff, sizeof(buff), "z %.2f  %.2f  %.2f", (int)1000 * IMU.az, IMU.gz, IMU.mz);
+    snprintf(buff, sizeof(buff), "z %.2f  v  %.2f", (int)1000 * IMU.az, IMU.gz, IMU.mz);
     tft.drawString(buff, 0, 48);
+    float heading = atan2(IMU.my, IMU.mx) * 180 / PI;
+    snprintf(buff, sizeof(buff), "heading = %.2f", heading);
+    tft.drawString(buff, 0, 64);
     delay(200);
+} 
+
+// START code from https://github.com/bolderflight/MPU9250/issues/33
+
+//  accelerometer and magnetometer data 
+float h, hx, hy, hz;
+//  magnetometer calibration data 
+float hxb, hxs, hyb, hys, hzb, hzs;
+//  euler angles 
+float yaw_rad, heading_rad;
+//  filtered heading 
+float filtered_heading_rad;
+float window_size = 20;
+// conversion radians to degrees 
+const float R2D = 180.0f / PI;
+
+void IMU_ShowHeading()
+{
+    // Read the MPU 9250 data 
+    readMPU9250();
+    hx = IMU.mx;
+    hy = IMU.my;
+    hz = IMU.mz;
+
+    // Normalize magnetometer data 
+    h = sqrtf(hx * hx + hy * hy + hz * hz);
+    hx /= h;
+    hy /= h;
+    hz /= h; 
+    // Compute euler angles 
+    yaw_rad = atan2f(-hy, hx);
+    heading_rad = constrainAngle360(yaw_rad);
+    // Filtering heading 
+    filtered_heading_rad = (filtered_heading_rad * (window_size - 1.0f) + heading_rad) / window_size;
+    // Display the results 
+    Serial.print(yaw_rad * R2D);
+    Serial.print("\t");
+    Serial.print(heading_rad * R2D);
+    Serial.print("\t");
+    Serial.println(filtered_heading_rad * R2D); 
+
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    snprintf(buff, sizeof(buff), "heading: %.2f", filtered_heading_rad * R2D);
+    tft.drawString(buff, 0, 0);
+    delay(200);
+} 
+
+/* Bound angle between 0 and 360 */
+float constrainAngle360(float dta) {
+  dta = fmod(dta, 2.0 * PI);
+  if (dta < 0.0)
+    dta += 2.0 * PI;
+  return dta;
+}
+// END code from https://github.com/bolderflight/MPU9250/issues/33
+
+void sleep() 
+{
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("Press again to wake up",  tft.width() / 2, tft.height() / 2 );
+  IMU.setSleepEnabled(true);
+  Serial.println("Go to Sleep");
+  delay(3000);
+  
+  // updated according https://github.com/Xinyuan-LilyGO/LilyGO-T-Wristband/issues/2
+  tft.writecommand(ST7735_SWRESET);
+  delay(100);
+  tft.writecommand(ST7735_SLPIN);
+  delay(150);
+  tft.writecommand(ST7735_DISPOFF);
+  
+  esp_sleep_enable_ext1_wakeup(GPIO_SEL_33, ESP_EXT1_WAKEUP_ANY_HIGH);
+  esp_deep_sleep_start();
 }
 
 
@@ -474,12 +580,7 @@ void loop()
             pressedTime = millis();
         } else {
             if (millis() - pressedTime > 3000) {
-                tft.fillScreen(TFT_BLACK);
-                tft.drawString("Reset WiFi Setting",  20, tft.height() / 2 );
-                delay(3000);
-                wifiManager.resetSettings();
-                wifiManager.erase(true);
-                esp_restart();
+              sleep();
             }
         }
     } else {
@@ -494,21 +595,9 @@ void loop()
         IMU_Show();
         break;
     case 2:
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString("Press again to wake up",  tft.width() / 2, tft.height() / 2 );
-        IMU.setSleepEnabled(true);
-        Serial.println("Go to Sleep");
-        delay(3000);
-        tft.writecommand(ST7735_SLPIN);
-        tft.writecommand(ST7735_DISPOFF);
-        esp_sleep_enable_ext1_wakeup(GPIO_SEL_33, ESP_EXT1_WAKEUP_ANY_HIGH);
-        esp_deep_sleep_start();
+        IMU_ShowHeading();
         break;
     default:
         break;
     }
 }
-
-
-

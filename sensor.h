@@ -7,7 +7,7 @@
 
 
 #define AHRS true         // Set to false for basic data read
-#define SerialDebugMPU9250 0  // Set to true to get Serial output for debugging
+#define SerialDebugMPU9250 false  // Set to true to get Serial output for debugging
 #define SerialDebugCalibrate false  // Set to true to get Serial output for debugging
 
 MPU9250 IMU;
@@ -77,9 +77,9 @@ void readMPU9250() {
 
     // Now we'll calculate the accleration value into actual g's
     // This depends on scale being set
-    IMU.ax = (float)IMU.accelCount[0] * IMU.aRes; // - accelBias[0];
-    IMU.ay = (float)IMU.accelCount[1] * IMU.aRes; // - accelBias[1];
-    IMU.az = (float)IMU.accelCount[2] * IMU.aRes; // - accelBias[2];
+    IMU.ax = (float)IMU.accelCount[0] * IMU.aRes; // - IMU.accelBias[0];
+    IMU.ay = (float)IMU.accelCount[1] * IMU.aRes; // - IMU.accelBias[1];
+    IMU.az = (float)IMU.accelCount[2] * IMU.aRes; // - IMU.accelBias[2];
 
     IMU.readGyroData(IMU.gyroCount);  // Read the x/y/z adc values
     IMU.getGres();
@@ -124,9 +124,11 @@ void readMPU9250() {
   // modified to allow any convenient orientation convention. This is ok by
   // aircraft orientation standards! Pass gyro rate as rad/s
   //  MadgwickQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f,  my,  mx, mz);
+  //
+  // FIXED according: https://forum.arduino.cc/index.php?topic=645527.0
   MahonyQuaternionUpdate(IMU.ax, IMU.ay, IMU.az, IMU.gx * DEG_TO_RAD,
                          IMU.gy * DEG_TO_RAD, IMU.gz * DEG_TO_RAD, IMU.my,
-                         IMU.mx, IMU.mz, IMU.deltat);
+                         IMU.mx, -IMU.mz, IMU.deltat);
   // Serial print and/or display at 0.5 s rate independent of data rates
   IMU.delt_t = millis() - IMU.count;
 
@@ -156,13 +158,13 @@ void readMPU9250() {
       Serial.print( (int)IMU.mz );
       Serial.println(" mG");
 
-      //Serial.print("q0 = ");
+      Serial.print("q0 = ");
       Serial.print(*getQ());
-      // Serial.print(" qx = ");
+      Serial.print(" qx = ");
       Serial.print(*(getQ() + 1));
-      // Serial.print(" qy = ");
+      Serial.print(" qy = ");
       Serial.print(*(getQ() + 2));
-      // Serial.print(" qz = ");
+      Serial.print(" qz = ");
       Serial.println(*(getQ() + 3));
     }
 
@@ -183,7 +185,7 @@ void readMPU9250() {
     IMU.roll  *= RAD_TO_DEG;
 
     if (SerialDebugMPU9250) {
-      // Serial.println("Yaw, Pitch, Roll: ");
+      Serial.println("Yaw, Pitch, Roll: ");
       Serial.print(IMU.yaw, 2);
       Serial.print(", ");
       Serial.print(IMU.pitch, 2);
