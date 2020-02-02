@@ -9,6 +9,7 @@
 #include "esp_adc_cal.h"
 #include "ttgo.h"
 #include "charge.h"
+#include "wifi_setup.h"
 
 #define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
 #define ARDUINO_OTA_UPDATE      //! Enable this line OTA update
@@ -21,9 +22,6 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #endif
-
-const char *ssid = "xx";
-const char *password = "xx";
 
 #define TP_PIN_PIN          33
 #define I2C_SDA_PIN         21
@@ -433,10 +431,6 @@ void IMU_Show()
 
 // START code from https://github.com/bolderflight/MPU9250/issues/33
 
-//  accelerometer and magnetometer data 
-float h, hx, hy, hz;
-//  euler angles 
-float yaw_rad, heading_rad;
 //  filtered heading 
 float filtered_heading_rad;
 float window_size = 20;
@@ -452,18 +446,18 @@ void IMU_ShowHeading()
     
     /* Read the MPU 9250 data */
     IMU.readSensor();
-    hx = IMU.getMagX_uT();
-    hy = IMU.getMagY_uT();
-    hz = IMU.getMagZ_uT();
+    float hx = IMU.getMagX_uT();
+    float hy = IMU.getMagY_uT();
+    float hz = IMU.getMagZ_uT();
 
     // Normalize magnetometer data 
-    h = sqrtf(hx * hx + hy * hy + hz * hz);
+    float h = sqrtf(hx * hx + hy * hy + hz * hz);
     hx /= h;
     hy /= h;
     hz /= h; 
     // Compute euler angles 
-    yaw_rad = atan2f(-hy, hx);
-    heading_rad = constrainAngle360(yaw_rad);
+    float yaw_rad = atan2f(-hy, hx);
+    float heading_rad = constrainAngle360(yaw_rad);
     // Filtering heading 
     filtered_heading_rad = (filtered_heading_rad * (window_size - 1.0f) + heading_rad) / window_size;
     // Display the results 
