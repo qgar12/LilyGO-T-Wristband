@@ -4,14 +4,16 @@
 #include <SPI.h>          // Serial Peripheral Interface (SPI) 
 #include <Wire.h>         // I2C library
 #include <WiFi.h>
-// #include <MPU9250.h>
-#include "sensor.h"
+#include <MPU9250.h>      // IMU / MPU-9250 lib (see https://github.com/bolderflight/MPU9250)
+//O#include "sensor.h"
 #include "esp_adc_cal.h"
 #include "ttgo.h"
 #include "charge.h"
 
 #define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
 #define ARDUINO_OTA_UPDATE      //! Enable this line OTA update
+//#define CALIBRATE_MAGNETOMETER //! calibrate magnemoter -> move in a 8
+
 
 
 #ifdef ARDUINO_OTA_UPDATE
@@ -20,13 +22,13 @@
 #include <ArduinoOTA.h>
 #endif
 
-const char *ssid = "xxx";
-const char *password = "xxx";
+const char *ssid = "xx";
+const char *password = "xx";
 
 #define TP_PIN_PIN          33
 #define I2C_SDA_PIN         21
 #define I2C_SCL_PIN         22
-#define IMU_INT_PIN         38
+#define IMU_INT_PIN         39
 #define RTC_INT_PIN         34
 #define BATT_ADC_PIN        35
 #define VBUS_PIN            36
@@ -35,8 +37,7 @@ const char *password = "xxx";
 #define CHARGE_PIN          32
 
 // chips
-extern MPU9250 IMU;
-//MPU9250         imu = IMU(Wire,0x68);
+MPU9250         IMU(Wire,0x69);
 TFT_eSPI        tft = TFT_eSPI(); 
 PCF8563_Class   rtc;
 
@@ -45,7 +46,7 @@ bool rtcIrq = false;
 bool initial = 1;
 bool otaStart = false;
 
-uint8_t func_select = 0;
+uint8_t func_select = 1;
 uint8_t omm = 99;
 uint8_t xcolon = 0;
 uint32_t targetTime = 0;       // for next 1 second timeout
@@ -58,8 +59,11 @@ bool charge_indication = false;
 
 uint8_t hh, mm, ss ;
 
+// Flag set to indicate MPU 9250 data is ready 
+volatile bool imu_data_ready = false;
+
 // TFT output
-#define TFT_NB_OF_LINES 4
+#define TFT_NB_OF_LINES 5
 int tftCurrentLine = 0;
 char tftBuffer[TFT_NB_OF_LINES+1][80]; // reserve one extra line for scrolling
 
@@ -178,8 +182,6 @@ void rtcSelfTest() {
     if (dt.year != yy || dt.month != mm || dt.day != dd || dt.hour != h || dt.minute != m) {
         DPRINT("Write DateTime FAIL");
     } else {
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.fillScreen(TFT_BLACK);
         DPRINT("Write DateTime PASS");
     }
 
@@ -341,55 +343,6 @@ void setupRTC()
     ss = datetime.second;
 }
 
-void setup()
-{
-    Serial.begin(115200);
-
-    tft.init();
-    tft.setRotation(1);
-    tft.setSwapBytes(true);
-    tft.pushImage(0, 0,  160, 80, ttgo);
-
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    Wire.setClock(400000);
-
-#ifdef FACTORY_HW_TEST
-    factoryTest();
-#endif
-
-    setupRTC();
-
-    setupMPU9250();
-
-    setupADC();
-
-    setupWiFi();
-
-    setupOTA();
-
-    tft.fillScreen(TFT_BLACK);
-
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK); // Note: the new fonts do not draw the background colour
-
-    targetTime = millis() + 1000;
-
-    pinMode(TP_PIN_PIN, INPUT);
-    //! Must be set to pull-up output mode in order to wake up in deep sleep mode
-    pinMode(TP_PWR_PIN, PULLUP);
-    digitalWrite(TP_PWR_PIN, HIGH);
-
-    pinMode(LED_PIN, OUTPUT);
-
-    pinMode(CHARGE_PIN, INPUT_PULLUP);
-    attachInterrupt(CHARGE_PIN, [] {
-        charge_indication = true;
-    }, CHANGE);
-
-    if (digitalRead(CHARGE_PIN) == LOW) {
-        charge_indication = true;
-    }
-}
-
 String getVoltage()
 {
     uint16_t v = analogRead(BATT_ADC_PIN);
@@ -448,32 +401,40 @@ void RTC_Show()
     }
 }
 
+// ISR to set data ready flag */
+void data_ready()
+{
+  imu_data_ready = true;
+}
+
 void IMU_Show()
 {
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(TL_DATUM);
-    readMPU9250();
-    snprintf(buff, sizeof(buff), "--  ACC  GYR   MAG");
+  if (imu_data_ready) {
+    imu_data_ready = false;
+    
+    DCLR();
+    
+    // read the sensor
+    IMU.readSensor();
+    
+    DPRINT("--  ACC  GYR   MAG");
     tft.drawString(buff, 0, 0);
-    snprintf(buff, sizeof(buff), "x %.2f  %.2f  %.2f", (int)1000 * IMU.ax, IMU.gx, IMU.mx);
+    DPRINT("x %+06.2f  %+06.2f  %+06.2f", IMU.getAccelX_mss(), IMU.getGyroX_rads(), IMU.getMagX_uT());
     tft.drawString(buff, 0, 16);
-    snprintf(buff, sizeof(buff), "y %.2f  %.2f  %.2f", (int)1000 * IMU.ay, IMU.gy, IMU.my);
+    DPRINT("y %+06.2f  %+06.2f  %+06.2f", IMU.getAccelY_mss(), IMU.getGyroY_rads(), IMU.getMagY_uT());
     tft.drawString(buff, 0, 32);
-    snprintf(buff, sizeof(buff), "z %.2f  v  %.2f", (int)1000 * IMU.az, IMU.gz, IMU.mz);
+    DPRINT("z %+06.2f  %+06.2f  %+06.2f", IMU.getAccelZ_mss(), IMU.getGyroZ_rads(), IMU.getMagZ_uT());
     tft.drawString(buff, 0, 48);
-    float heading = atan2(IMU.my, IMU.mx) * 180 / PI;
-    snprintf(buff, sizeof(buff), "heading = %.2f", heading);
-    tft.drawString(buff, 0, 64);
-    delay(200);
+    float heading = atan2(IMU.getMagY_uT(), IMU.getMagX_uT()) * 180 / PI;
+    DPRINT("heading = %.2f", heading);
+
+  }
 } 
 
 // START code from https://github.com/bolderflight/MPU9250/issues/33
 
 //  accelerometer and magnetometer data 
 float h, hx, hy, hz;
-//  magnetometer calibration data 
-float hxb, hxs, hyb, hys, hzb, hzs;
 //  euler angles 
 float yaw_rad, heading_rad;
 //  filtered heading 
@@ -484,11 +445,16 @@ const float R2D = 180.0f / PI;
 
 void IMU_ShowHeading()
 {
-    // Read the MPU 9250 data 
-    readMPU9250();
-    hx = IMU.mx;
-    hy = IMU.my;
-    hz = IMU.mz;
+  if (imu_data_ready) {
+    imu_data_ready = false;
+
+    DCLR();
+    
+    /* Read the MPU 9250 data */
+    IMU.readSensor();
+    hx = IMU.getMagX_uT();
+    hy = IMU.getMagY_uT();
+    hz = IMU.getMagZ_uT();
 
     // Normalize magnetometer data 
     h = sqrtf(hx * hx + hy * hy + hz * hz);
@@ -501,18 +467,10 @@ void IMU_ShowHeading()
     // Filtering heading 
     filtered_heading_rad = (filtered_heading_rad * (window_size - 1.0f) + heading_rad) / window_size;
     // Display the results 
-    Serial.print(yaw_rad * R2D);
-    Serial.print("\t");
-    Serial.print(heading_rad * R2D);
-    Serial.print("\t");
-    Serial.println(filtered_heading_rad * R2D); 
-
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(TL_DATUM);
-    snprintf(buff, sizeof(buff), "heading: %.2f", filtered_heading_rad * R2D);
-    tft.drawString(buff, 0, 0);
-    delay(200);
+    DPRINT("yaw_rad:      %.2f", yaw_rad * R2D);
+    DPRINT("heading_rad:  %.2f", heading_rad * R2D);
+    DPRINT("filtered_rad: %.2f", filtered_heading_rad * R2D); 
+  }
 } 
 
 /* Bound angle between 0 and 360 */
@@ -530,7 +488,7 @@ void sleep()
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Press again to wake up",  tft.width() / 2, tft.height() / 2 );
-  IMU.setSleepEnabled(true);
+//O  IMU.setSleepEnabled(true);
   Serial.println("Go to Sleep");
   delay(3000);
   
@@ -543,6 +501,94 @@ void sleep()
   
   esp_sleep_enable_ext1_wakeup(GPIO_SEL_33, ESP_EXT1_WAKEUP_ANY_HIGH);
   esp_deep_sleep_start();
+}
+
+void setupMpu9250() {
+    // initialize IMU 
+    DCLR();
+    DPRINT("Initializing IMU / MPU9250");
+    int status = IMU.begin();
+    DPRINT("status = %i", status);
+    if (status < 0) {
+      DPRINT("... ERROR");
+    }
+    else {
+      // setting the accelerometer full scale range to +/-8G 
+      IMU.setAccelRange(MPU9250::ACCEL_RANGE_8G);
+      // setting the gyroscope full scale range to +/-500 deg/s
+      IMU.setGyroRange(MPU9250::GYRO_RANGE_500DPS);
+      // setting DLPF bandwidth to 20 Hz
+      IMU.setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_20HZ);
+      // setting SRD to 19 for a 50 Hz update rate
+      IMU.setSrd(19);
+      DPRINT("... done");
+    }
+    DWAIT();
+
+#ifdef CALIBRATE_MAGNETOMETER
+    // Calibrate magnetometer
+    DCLR();
+    DPRINT("Calibrating magnetometer,");
+    DPRINT(".. please slowly move in a");
+    DPRINT(".. figure 8 until complete...");
+    IMU.calibrateMag();
+    DPRINT("Done!");
+    DWAIT(); 
+#endif
+
+    //  Attach the data ready interrupt to the data ready ISR
+    IMU.enableDataReadyInterrupt();
+    pinMode(IMU_INT_PIN, INPUT_PULLUP);
+    attachInterrupt(IMU_INT_PIN, data_ready, RISING); 
+}
+
+void setup()
+{
+    Serial.begin(115200);
+
+    tft.init();
+    tft.setRotation(1);
+    tft.setSwapBytes(true);
+    tft.pushImage(0, 0,  160, 80, ttgo);
+
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(400000);
+
+#ifdef FACTORY_HW_TEST
+    factoryTest();
+#endif
+
+    setupRTC();
+
+    setupADC();
+
+    setupWiFi();
+
+    setupOTA();
+
+    setupMpu9250();
+    
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK); // Note: the new fonts do not draw the background colour
+
+    targetTime = millis() + 1000;
+
+    pinMode(TP_PIN_PIN, INPUT);
+    //! Must be set to pull-up output mode in order to wake up in deep sleep mode
+    pinMode(TP_PWR_PIN, PULLUP);
+    digitalWrite(TP_PWR_PIN, HIGH);
+
+    pinMode(LED_PIN, OUTPUT);
+
+    pinMode(CHARGE_PIN, INPUT_PULLUP);
+    attachInterrupt(CHARGE_PIN, [] {
+        charge_indication = true;
+    }, CHANGE);
+
+    if (digitalRead(CHARGE_PIN) == LOW) {
+        charge_indication = true;
+    }
 }
 
 
@@ -580,7 +626,7 @@ void loop()
             pressedTime = millis();
         } else {
             if (millis() - pressedTime > 3000) {
-              sleep();
+ //             sleep();
             }
         }
     } else {
@@ -593,9 +639,11 @@ void loop()
         break;
     case 1:
         IMU_Show();
+        delay(200);
         break;
     case 2:
         IMU_ShowHeading();
+        delay(200);
         break;
     default:
         break;
