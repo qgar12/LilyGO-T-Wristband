@@ -11,6 +11,7 @@
 #include "wifi_setup.h"
 #include "tftHelper.h"
 #include "xMPU9250.h"
+#include "openTrack.h"
 
 const char* myName="BeatWatch";
 
@@ -19,6 +20,7 @@ const char* myName="BeatWatch";
 //#define CALIBRATE_MAGNETOMETER //! calibrate magnemoter -> move in a 8
 //#define SAVE_MAGNETOMETER_CALIB_TO_EEPROM
 #define LOAD_MAGNETOMETER_CALIB_FROM_EEPROM
+#define SEND_TO_OPENTRACK
 
 #ifdef ARDUINO_OTA_UPDATE
 #include <ESPmDNS.h>
@@ -402,7 +404,12 @@ void IMU_ShowValues()
     tft.drawString(buff, 0, 48);
     float heading = atan2(IMU.getMagY_uT(), IMU.getMagX_uT()) * 180 / PI;
     DPRINT("heading = %.2f", heading);
-
+    
+#ifdef SEND_TO_OPENTRACK
+    OpenTrackPackage pack;
+    pack.yaw = heading;
+    openTrackSend(pack);
+#endif
   }
 } 
 
