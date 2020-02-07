@@ -1,21 +1,22 @@
 
 #include <pcf8563.h>      // Library for NXP PCF8563 RTC chip
-#include <TFT_eSPI.h>     // Graphics and font library for ST7735 driver chip
+#include <TFT_eSPI.h>     // Graphics and font library for ST7735 driver chip (see https://github.com/Bodmer/TFT_eSPI.git)
 #include <SPI.h>          // Serial Peripheral Interface (SPI) 
 #include <Wire.h>         // I2C library
 #include <WiFi.h>
-#include <MPU9250.h>      // IMU / MPU-9250 lib (see https://github.com/bolderflight/MPU9250)
-//O#include "sensor.h"
+//#include <MPU9250.h>      // IMU / MPU-9250 lib (see https://github.com/bolderflight/MPU9250)
 #include "esp_adc_cal.h"
+
+// local libs
 #include "ttgo.h"
 #include "charge.h"
 #include "wifi_setup.h"
+#include "tftHelper.h"
+#include "xMPU9250.h"
 
 #define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
 #define ARDUINO_OTA_UPDATE      //! Enable this line OTA update
 //#define CALIBRATE_MAGNETOMETER //! calibrate magnemoter -> move in a 8
-
-
 
 #ifdef ARDUINO_OTA_UPDATE
 #include <ESPmDNS.h>
@@ -35,7 +36,7 @@
 #define CHARGE_PIN          32
 
 // chips
-MPU9250         IMU(Wire,0x69);
+xMPU9250         IMU(Wire,0x69);
 TFT_eSPI        tft = TFT_eSPI(); 
 PCF8563_Class   rtc;
 
@@ -57,54 +58,12 @@ bool charge_indication = false;
 
 uint8_t hh, mm, ss ;
 
-// Flag set to indicate MPU 9250 data is ready 
+// Flag set to indicate MPU 9250 data is ready (will be set in interrupt service routine ISR)
 volatile bool imu_data_ready = false;
-
-// TFT output
-#define TFT_NB_OF_LINES 5
-int tftCurrentLine = 0;
-char tftBuffer[TFT_NB_OF_LINES+1][80]; // reserve one extra line for scrolling
-
-void tfdClr() {
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(TL_DATUM);
-    tftCurrentLine=0;
- }
-
-void tfdPrintLine(const char *buf, const int lineNb) {
-  tft.drawString(buf, 0, lineNb * 16);
-}
-
-void tfdPrint(const char *buf) {
-  if (tftCurrentLine >= TFT_NB_OF_LINES) {
-    // scroll & print
-    tfdClr();
-    for (int ix=0; ix < TFT_NB_OF_LINES; ix++) {
-      strncpy(tftBuffer[ix], tftBuffer[ix+1], sizeof(tftBuffer[ix]));
-      tfdPrintLine(tftBuffer[ix], ix);
-    } 
-  }
-  else {
-    // print
-    tfdPrintLine(tftBuffer[tftCurrentLine], tftCurrentLine);
-    tftCurrentLine +=1;
-  }
-  
-}
-
-char* tfdGetBuffer() {
-  return tftBuffer[tftCurrentLine];
-}
-
-#define DCLR() {tfdClr();}
-//#define DPRINT(...) { char b = tfdGetBuffer(); snprintf(b, sizeof(b), __VA_ARGS__); tfdPrint(b); }
-#define DPRINT(...) { char* b = tfdGetBuffer(); snprintf(tftBuffer[tftCurrentLine], sizeof(tftBuffer[tftCurrentLine]), __VA_ARGS__); tfdPrint(tftBuffer[tftCurrentLine]); }
-#define DWAIT() {delay(2000);}
 
 void scanI2Cdevice(void)
 {
-  DCLR();
+  DCLEAR();
   uint8_t err, addr;
   int nDevices = 0;
   for (addr = 1; addr < 127; addr++) {
@@ -136,7 +95,7 @@ void scanI2Cdevice(void)
 
 void wifi_scan()
 {
-    DCLR();
+    DCLEAR();
     DPRINT("Scan Network:");
 
     WiFi.mode(WIFI_STA);
@@ -169,7 +128,7 @@ void drawProgressBar(uint16_t x0, uint16_t y0, uint16_t w, uint16_t h, uint8_t p
 }
 
 void rtcSelfTest() {
-    DCLR();
+    DCLEAR();
     DPRINT("RTC Interrupt self test");
 
     int yy = 2019, mm = 5, dd = 15, h = 2, m = 10, s = 0;
@@ -224,7 +183,7 @@ void factoryTest()
 void setupWiFi()
 {
 #ifdef ARDUINO_OTA_UPDATE
-    DCLR();
+    DCLEAR();
     DPRINT("Wifi setup");
     DPRINT("Connection to %s", ssid);
     
@@ -246,7 +205,7 @@ void setupWiFi()
 void setupOTA()
 {
 #ifdef ARDUINO_OTA_UPDATE
-    DCLR();
+    DCLEAR();
     DPRINT("OTA setup");
     
     // Port defaults to 3232
@@ -410,7 +369,7 @@ void IMU_Show()
   if (imu_data_ready) {
     imu_data_ready = false;
     
-    DCLR();
+    DCLEAR();
     
     // read the sensor
     IMU.readSensor();
@@ -442,7 +401,7 @@ void IMU_ShowHeading()
   if (imu_data_ready) {
     imu_data_ready = false;
 
-    DCLR();
+    DCLEAR();
     
     /* Read the MPU 9250 data */
     IMU.readSensor();
@@ -482,7 +441,7 @@ void sleep()
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Press again to wake up",  tft.width() / 2, tft.height() / 2 );
-//O  IMU.setSleepEnabled(true);
+  IMU.setSleepEnabled();
   Serial.println("Go to Sleep");
   delay(3000);
   
@@ -499,7 +458,7 @@ void sleep()
 
 void setupMpu9250() {
     // initialize IMU 
-    DCLR();
+    DCLEAR();
     DPRINT("Initializing IMU / MPU9250");
     int status = IMU.begin();
     DPRINT("status = %i", status);
@@ -521,7 +480,7 @@ void setupMpu9250() {
 
 #ifdef CALIBRATE_MAGNETOMETER
     // Calibrate magnetometer
-    DCLR();
+    DCLEAR();
     DPRINT("Calibrating magnetometer,");
     DPRINT(".. please slowly move in a");
     DPRINT(".. figure 8 until complete...");
