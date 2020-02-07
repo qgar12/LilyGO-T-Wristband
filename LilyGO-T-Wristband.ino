@@ -2,9 +2,7 @@
 #include <pcf8563.h>      // Library for NXP PCF8563 RTC chip
 #include <TFT_eSPI.h>     // Graphics and font library for ST7735 driver chip (see https://github.com/Bodmer/TFT_eSPI.git)
 #include <SPI.h>          // Serial Peripheral Interface (SPI) 
-#include <Wire.h>         // I2C library
-#include <WiFi.h>
-//#include <MPU9250.h>      // IMU / MPU-9250 lib (see https://github.com/bolderflight/MPU9250)
+#include <Preferences.h>  // ESP32 Preferences / non-volatile storage
 #include "esp_adc_cal.h"
 
 // local libs
@@ -14,9 +12,13 @@
 #include "tftHelper.h"
 #include "xMPU9250.h"
 
+const char* myName="BeatWatch";
+
 #define FACTORY_HW_TEST     //! Test RTC and WiFi scan when enabled
 #define ARDUINO_OTA_UPDATE      //! Enable this line OTA update
 //#define CALIBRATE_MAGNETOMETER //! calibrate magnemoter -> move in a 8
+//#define SAVE_MAGNETOMETER_CALIB_TO_EEPROM
+#define LOAD_MAGNETOMETER_CALIB_FROM_EEPROM
 
 #ifdef ARDUINO_OTA_UPDATE
 #include <ESPmDNS.h>
@@ -36,16 +38,23 @@
 #define CHARGE_PIN          32
 
 // chips
-xMPU9250         IMU(Wire,0x69);
+xMPU9250        IMU(Wire,0x69);
 TFT_eSPI        tft = TFT_eSPI(); 
 PCF8563_Class   rtc;
+Preferences     pref;
 
 char buff[256];
 bool rtcIrq = false;
 bool initial = 1;
 bool otaStart = false;
 
-uint8_t func_select = 1;
+// user menu
+uint8_t func_select = 0;
+const uint8_t nbOfMenus = 5;
+boolean menuEntry = true;
+uint32_t menuRefreshTime = 0;
+
+
 uint8_t omm = 99;
 uint8_t xcolon = 0;
 uint32_t targetTime = 0;       // for next 1 second timeout
@@ -61,9 +70,16 @@ uint8_t hh, mm, ss ;
 // Flag set to indicate MPU 9250 data is ready (will be set in interrupt service routine ISR)
 volatile bool imu_data_ready = false;
 
+// macros
+#define DCLEAR() {tftClear(&tft);}
+//#define DPRINT(...) { char b = tfdGetBuffer(); snprintf(b, sizeof(b), __VA_ARGS__); tfdPrint(b); }
+#define DPRINT(...) { char* b = tfdGetBuffer(); snprintf(tftBuffer[tftCurrentLine], sizeof(tftBuffer[tftCurrentLine]), __VA_ARGS__); tftPrint(&tft, tftBuffer[tftCurrentLine]); Serial.println(tftBuffer[tftCurrentLine]);}
+#define DWAIT() {delay(2000);}
+
 void scanI2Cdevice(void)
 {
   DCLEAR();
+
   uint8_t err, addr;
   int nDevices = 0;
   for (addr = 1; addr < 127; addr++) {
@@ -124,6 +140,7 @@ void drawProgressBar(uint16_t x0, uint16_t y0, uint16_t w, uint16_t h, uint8_t p
     uint16_t barHeight = h - 2 * margin;
     uint16_t barWidth = w - 2 * margin;
     tft.drawRoundRect(x0, y0, w, h, 3, frameColor);
+    tft.fillRect(x0 + margin, y0 + margin, barWidth, barHeight, TFT_BLACK);
     tft.fillRect(x0 + margin, y0 + margin, barWidth * percentage / 100.0, barHeight, barColor);
 }
 
@@ -222,6 +239,7 @@ void setupOTA()
     // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
     ArduinoOTA.onStart([]() {
+        IMU.disableDataReadyInterrupt();
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH)
             type = "sketch";
@@ -359,12 +377,12 @@ void RTC_Show()
 }
 
 // ISR to set data ready flag */
-void data_ready()
+void IRAM_ATTR data_ready()
 {
   imu_data_ready = true;
 }
 
-void IMU_Show()
+void IMU_ShowValues()
 {
   if (imu_data_ready) {
     imu_data_ready = false;
@@ -396,7 +414,7 @@ float window_size = 20;
 // conversion radians to degrees 
 const float R2D = 180.0f / PI;
 
-void IMU_ShowHeading()
+void IMU_CalcHeading()
 {
   if (imu_data_ready) {
     imu_data_ready = false;
@@ -456,6 +474,49 @@ void sleep()
   esp_deep_sleep_start();
 }
 
+#define PUT_TO_PREF(PREF)             \
+  float old##PREF = IMU.get##PREF();  \
+  pref.putFloat(#PREF, old##PREF);    \
+  DPRINT(#PREF "=%06f", old##PREF);
+
+#ifdef SAVE_MAGNETOMETER_CALIB_TO_EEPROM
+  #define SET_FROM_PREF(PREF_BIAS, PREF_SCALE, SET_TO) {                      \
+    float_t bias = pref.getFloat(#PREF_BIAS);                                 \
+    float_t scale = pref.getFloat(#PREF_SCALE);                               \
+    if (bias == NAN) {                                                        \
+      DPRINT(#PREF_BIAS "is NAN!!");                                          \
+    }                                                                         \
+    else if (scale == NAN) {                                                  \
+      DPRINT(#PREF_SCALE "is NAN!!");                                         \
+    }                                                                         \
+    else if (old##PREF_BIAS != bias) {         \
+      DPRINT(#PREF_BIAS "Different than write!!");                            \
+      DPRINT("%06f / %06f", old##PREF_BIAS, bias);                            \
+    }                                                                         \
+    else if (old##PREF_SCALE != scale) {       \
+      DPRINT(#PREF_SCALE "Different than write!!");                           \
+      DPRINT("%06f / %06f", old##PREF_SCALE, scale);                          \
+    }                                                                         \ 
+    else {                                                                    \
+      IMU.set##SET_TO(bias, scale);                                           \
+    }                                                                         \
+  }
+#else
+  #define SET_FROM_PREF(PREF_BIAS, PREF_SCALE, SET_TO) {                      \
+    float_t bias = pref.getFloat(#PREF_BIAS);                                 \
+    float_t scale = pref.getFloat(#PREF_SCALE);                               \
+    if (bias == NAN) {                                                        \
+      DPRINT(#PREF_BIAS "is NAN!!");                                          \
+    }                                                                         \
+    else if (scale == NAN) {                                                  \
+      DPRINT(#PREF_SCALE "is NAN!!");                                         \
+    }                                                                         \
+   else {                                                                    \
+      IMU.set##SET_TO(bias, scale);                                           \
+    }                                                                         \
+  }
+#endif
+
 void setupMpu9250() {
     // initialize IMU 
     DCLEAR();
@@ -489,21 +550,67 @@ void setupMpu9250() {
     DWAIT(); 
 #endif
 
+    pref.begin(myName, false);
+    
+#if defined(CALIBRATE_MAGNETOMETER) && defined(SAVE_MAGNETOMETER_CALIB_TO_EEPROM)
+    // Save calibration to Preferences
+    DCLEAR();
+    DPRINT("Saving Calibration to ESP32 Preferences");
+    PUT_TO_PREF(MagBiasX_uT);
+    PUT_TO_PREF(MagBiasY_uT);
+    PUT_TO_PREF(MagBiasZ_uT);
+    PUT_TO_PREF(MagScaleFactorX);
+    PUT_TO_PREF(MagScaleFactorY);
+    PUT_TO_PREF(MagScaleFactorZ);
+    DPRINT("Done!");
+    DWAIT();
+#endif
+
+#ifdef LOAD_MAGNETOMETER_CALIB_FROM_EEPROM
+    // Load calibration from Preferences
+    DCLEAR();
+    DPRINT("Loading Mag.Calib from ESP32");
+    SET_FROM_PREF(MagBiasX_uT, MagScaleFactorX, MagCalX);
+    SET_FROM_PREF(MagBiasY_uT, MagScaleFactorY, MagCalY);
+    SET_FROM_PREF(MagBiasY_uT, MagScaleFactorY, MagCalY);
+    DPRINT("Done!");
+    DWAIT();
+#endif  
+
     //  Attach the data ready interrupt to the data ready ISR
-    IMU.enableDataReadyInterrupt();
     pinMode(IMU_INT_PIN, INPUT_PULLUP);
-    attachInterrupt(IMU_INT_PIN, data_ready, RISING); 
+    attachInterrupt(IMU_INT_PIN, data_ready, RISING);
+    IMU.enableDataReadyInterrupt();
+}
+
+uint32_t nextRefresh = 0;
+const uint32_t refreshInterval = 300; 
+void IMU_ShowHeading() {
+  if(nextRefresh > millis()) {
+    nextRefresh = millis() + refreshInterval;
+
+    // get new values from IMU / MPU9250
+    IMU.readSensor();
+    float heading = atan2(IMU.getMagY_uT(), IMU.getMagX_uT()) * 180 / PI;
+
+    // calc & show 
+    int percentage = ((heading + 180) / 360 * 100);
+ //   snprintf(buff, sizeof(buff), "Heading: %+06f", heading);
+ //   tft.drawString(buff, tft.width() / 2 - 20, 55 );
+    drawProgressBar(10, 30, 120, 15, percentage, TFT_WHITE, TFT_BLUE);
+  }
 }
 
 void setup()
 {
     Serial.begin(115200);
-
+  
     tft.init();
     tft.setRotation(1);
     tft.setSwapBytes(true);
     tft.pushImage(0, 0,  160, 80, ttgo);
-
+    delay(200);
+    
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
 
@@ -555,50 +662,82 @@ void loop()
     if (otaStart)
         return;
 
-    if (charge_indication) {
-        charge_indication = false;
-        if (digitalRead(CHARGE_PIN) == LOW) {
-            tft.pushImage(140, 55, 34, 16, charge);
-        } else {
-            tft.fillRect(140, 55, 34, 16, TFT_BLACK);
-        }
-    }
-
-
     if (digitalRead(TP_PIN_PIN) == HIGH) {
         if (!pressed) {
+          Serial.print("#9");
             initial = 1;
             targetTime = millis() + 1000;
             tft.fillScreen(TFT_BLACK);
             omm = 99;
-            func_select = func_select + 1 > 2 ? 0 : func_select + 1;
+            
+            // switch menu tab/entry
+            func_select = func_select + 1 > (nbOfMenus-1) ? 0 : func_select + 1;
+            menuEntry = true;
             digitalWrite(LED_PIN, HIGH);
             delay(100);
             digitalWrite(LED_PIN, LOW);
             pressed = true;
             pressedTime = millis();
-        } else {
-            if (millis() - pressedTime > 3000) {
- //             sleep();
-            }
         }
     } else {
         pressed = false;
     }
 
     switch (func_select) {
-    case 0:
-        RTC_Show();
-        break;
-    case 1:
-        IMU_Show();
-        delay(200);
-        break;
-    case 2:
-        IMU_ShowHeading();
-        delay(200);
-        break;
-    default:
-        break;
+      case 0:
+          RTC_Show();
+          break;
+      case 1:
+          if (menuEntry) {
+            tft.fillScreen(TFT_BLACK);
+ //           tft.setTextDatum(TC_DATUM);
+ //           tft.setTextPadding(tft.textWidth(" 888% "));
+            nextRefresh = millis() + refreshInterval;
+            menuEntry = false;
+          }
+          IMU_ShowHeading();
+          break;
+      case 2:
+      case 3:  
+          if (menuEntry) 
+          {
+            menuRefreshTime=millis();
+
+          }
+          if (menuEntry || (millis() - menuRefreshTime > 200)) 
+          {tft.fillScreen(TFT_BLACK);
+            switch (func_select) 
+            {
+              case 2: IMU_ShowValues(); break;
+              case 3: IMU_CalcHeading(); break;
+            }
+            menuRefreshTime=millis();
+          }
+          menuEntry=false;
+          break;
+      case 4:
+          if (menuEntry) {
+            menuEntry = false;
+            DCLEAR();
+            DPRINT("");
+            DPRINT("Hold for further 5sec to sleep");
+          }        
+          if (pressed && (millis() - pressedTime > 5000)) {
+            sleep();
+          }
+          break;
+      default:
+          break;
+    }
+
+
+    if (charge_indication) {
+       charge_indication = false;
+
+        if (digitalRead(CHARGE_PIN) == LOW) {
+            tft.pushImage(140, 55, 34, 16, charge);
+        } else {
+            tft.fillRect(140, 55, 34, 16, TFT_BLACK);
+        }
     }
 }
