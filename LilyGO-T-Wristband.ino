@@ -12,6 +12,7 @@
 #include "tftHelper.h"
 #include "xMPU9250.h"
 #include "openTrack.h"
+#include "faceTrackNoIr.h"
 
 const char* myName="BeatWatch";
 
@@ -20,7 +21,8 @@ const char* myName="BeatWatch";
 //#define CALIBRATE_MAGNETOMETER //! calibrate magnemoter -> move in a 8
 //#define SAVE_MAGNETOMETER_CALIB_TO_EEPROM
 #define LOAD_MAGNETOMETER_CALIB_FROM_EEPROM
-#define SEND_TO_OPENTRACK
+//#define SEND_TO_OPENTRACK
+#define SEND_TO_FACETRACK
 
 #ifdef ARDUINO_OTA_UPDATE
 #include <ESPmDNS.h>
@@ -406,9 +408,14 @@ void IMU_ShowValues()
     DPRINT("heading = %.2f", heading);
     
 #ifdef SEND_TO_OPENTRACK
-    OpenTrackPackage pack;
-    pack.yaw = heading;
-    openTrackSend(pack);
+    OpenTrackPackage otPack;
+    otPack.yaw = atan2(imu.getMagY_uT(), imu.getMagX_uT()) * 180 / PI;
+    openTrackSend(otPack);
+#endif
+#ifdef SEND_TO_FACETRACK
+    FaceTrackPackage ftPack;
+    ftPack.yaw = atan2(imu.getMagY_uT(), imu.getMagX_uT()) * 180 / PI;
+    faceTrackSend(ftPack);
 #endif
   }
 } 
@@ -450,9 +457,14 @@ void IMU_CalcHeading()
     DPRINT("filtered_rad: %.2f", filtered_heading_rad * R2D); 
 
 #ifdef SEND_TO_OPENTRACK
-    OpenTrackPackage pack;
-    pack.yaw = heading_rad;
-    openTrackSend(pack);
+    OpenTrackPackage otPack;
+    otPack.yaw = heading_rad * R2D;
+    openTrackSend(otPack);
+#endif
+#ifdef SEND_TO_FACETRACK
+    FaceTrackPackage ftPack;
+    ftPack.yaw = heading_rad * R2D;
+    faceTrackSend(ftPack);
 #endif
   }
 } 
