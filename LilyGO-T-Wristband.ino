@@ -40,7 +40,7 @@ const char* myName="BeatWatch";
 #define CHARGE_PIN          32
 
 // chips
-xMPU9250        IMU(Wire,0x69);
+xMPU9250        imu(Wire,0x69);
 TFT_eSPI        tft = TFT_eSPI(); 
 PCF8563_Class   rtc;
 Preferences     pref;
@@ -241,7 +241,7 @@ void setupOTA()
     // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
     ArduinoOTA.onStart([]() {
-        IMU.disableDataReadyInterrupt();
+        imu.disableDataReadyInterrupt();
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH)
             type = "sketch";
@@ -392,17 +392,17 @@ void IMU_ShowValues()
     DCLEAR();
     
     // read the sensor
-    IMU.readSensor();
+    imu.readSensor();
     
     DPRINT("--  ACC  GYR   MAG");
     tft.drawString(buff, 0, 0);
-    DPRINT("x %+06.2f  %+06.2f  %+06.2f", IMU.getAccelX_mss(), IMU.getGyroX_rads(), IMU.getMagX_uT());
+    DPRINT("x %+06.2f  %+06.2f  %+06.2f", imu.getAccelX_mss(), imu.getGyroX_rads(), imu.getMagX_uT());
     tft.drawString(buff, 0, 16);
-    DPRINT("y %+06.2f  %+06.2f  %+06.2f", IMU.getAccelY_mss(), IMU.getGyroY_rads(), IMU.getMagY_uT());
+    DPRINT("y %+06.2f  %+06.2f  %+06.2f", imu.getAccelY_mss(), imu.getGyroY_rads(), imu.getMagY_uT());
     tft.drawString(buff, 0, 32);
-    DPRINT("z %+06.2f  %+06.2f  %+06.2f", IMU.getAccelZ_mss(), IMU.getGyroZ_rads(), IMU.getMagZ_uT());
+    DPRINT("z %+06.2f  %+06.2f  %+06.2f", imu.getAccelZ_mss(), imu.getGyroZ_rads(), imu.getMagZ_uT());
     tft.drawString(buff, 0, 48);
-    float heading = atan2(IMU.getMagY_uT(), IMU.getMagX_uT()) * 180 / PI;
+    float heading = atan2(imu.getMagY_uT(), imu.getMagX_uT()) * 180 / PI;
     DPRINT("heading = %.2f", heading);
     
 #ifdef SEND_TO_OPENTRACK
@@ -429,10 +429,10 @@ void IMU_CalcHeading()
     DCLEAR();
     
     /* Read the MPU 9250 data */
-    IMU.readSensor();
-    float hx = IMU.getMagX_uT();
-    float hy = IMU.getMagY_uT();
-    float hz = IMU.getMagZ_uT();
+    imu.readSensor();
+    float hx = imu.getMagX_uT();
+    float hy = imu.getMagY_uT();
+    float hz = imu.getMagZ_uT();
 
     // Normalize magnetometer data 
     float h = sqrtf(hx * hx + hy * hy + hz * hz);
@@ -448,6 +448,12 @@ void IMU_CalcHeading()
     DPRINT("yaw_rad:      %.2f", yaw_rad * R2D);
     DPRINT("heading_rad:  %.2f", heading_rad * R2D);
     DPRINT("filtered_rad: %.2f", filtered_heading_rad * R2D); 
+
+#ifdef SEND_TO_OPENTRACK
+    OpenTrackPackage pack;
+    pack.yaw = heading_rad;
+    openTrackSend(pack);
+#endif
   }
 } 
 
@@ -466,7 +472,7 @@ void sleep()
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Press again to wake up",  tft.width() / 2, tft.height() / 2 );
-  IMU.setSleepEnabled();
+  imu.setSleepEnabled();
   Serial.println("Go to Sleep");
   delay(3000);
   
@@ -482,7 +488,7 @@ void sleep()
 }
 
 #define PUT_TO_PREF(PREF)             \
-  float old##PREF = IMU.get##PREF();  \
+  float old##PREF = imu.get##PREF();  \
   pref.putFloat(#PREF, old##PREF);    \
   DPRINT(#PREF "=%06f", old##PREF);
 
@@ -505,7 +511,7 @@ void sleep()
       DPRINT("%06f / %06f", old##PREF_SCALE, scale);                          \
     }                                                                         \ 
     else {                                                                    \
-      IMU.set##SET_TO(bias, scale);                                           \
+      imu.set##SET_TO(bias, scale);                                           \
     }                                                                         \
   }
 #else
@@ -519,7 +525,7 @@ void sleep()
       DPRINT(#PREF_SCALE "is NAN!!");                                         \
     }                                                                         \
    else {                                                                    \
-      IMU.set##SET_TO(bias, scale);                                           \
+      imu.set##SET_TO(bias, scale);                                           \
     }                                                                         \
   }
 #endif
@@ -528,20 +534,20 @@ void setupMpu9250() {
     // initialize IMU 
     DCLEAR();
     DPRINT("Initializing IMU / MPU9250");
-    int status = IMU.begin();
+    int status = imu.begin();
     DPRINT("status = %i", status);
     if (status < 0) {
       DPRINT("... ERROR");
     }
     else {
       // setting the accelerometer full scale range to +/-8G 
-      IMU.setAccelRange(MPU9250::ACCEL_RANGE_8G);
+      imu.setAccelRange(MPU9250::ACCEL_RANGE_8G);
       // setting the gyroscope full scale range to +/-500 deg/s
-      IMU.setGyroRange(MPU9250::GYRO_RANGE_500DPS);
+      imu.setGyroRange(MPU9250::GYRO_RANGE_500DPS);
       // setting DLPF bandwidth to 20 Hz
-      IMU.setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_20HZ);
+      imu.setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_20HZ);
       // setting SRD to 19 for a 50 Hz update rate
-      IMU.setSrd(19);
+      imu.setSrd(19);
       DPRINT("... done");
     }
     DWAIT();
@@ -552,7 +558,7 @@ void setupMpu9250() {
     DPRINT("Calibrating magnetometer,");
     DPRINT(".. please slowly move in a");
     DPRINT(".. figure 8 until complete...");
-    IMU.calibrateMag();
+    imu.calibrateMag();
     DPRINT("Done!");
     DWAIT(); 
 #endif
@@ -587,7 +593,7 @@ void setupMpu9250() {
     //  Attach the data ready interrupt to the data ready ISR
     pinMode(IMU_INT_PIN, INPUT_PULLUP);
     attachInterrupt(IMU_INT_PIN, data_ready, RISING);
-    IMU.enableDataReadyInterrupt();
+    imu.enableDataReadyInterrupt();
 }
 
 uint32_t nextRefresh = 0;
@@ -597,8 +603,8 @@ void IMU_ShowHeading() {
     nextRefresh = millis() + refreshInterval;
 
     // get new values from IMU / MPU9250
-    IMU.readSensor();
-    float heading = atan2(IMU.getMagY_uT(), IMU.getMagX_uT()) * 180 / PI;
+    imu.readSensor();
+    float heading = atan2(imu.getMagY_uT(), imu.getMagX_uT()) * 180 / PI;
 
     // calc & show 
     int percentage = ((heading + 180) / 360 * 100);
